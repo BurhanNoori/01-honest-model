@@ -1,0 +1,30 @@
+# 1. Python environments & caches:
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+#  2. Tooling caches:
+.pytest_cache/
+.ruff_cache/
+
+#  3. Data directories (Rule: Never commit raw/processed data!):
+data/
+*.csv
+*.parquet
+*.feather
+
+#  4. Model weights & artifacts:
+models/
+*.pkl
+*.joblib
+*.pt
+*.onnx
+
+#   5. Environment secrets & OS noise:
+.env
+.DS_Store
+Thumbs.db
+
+#   6. Coding Agents
+AGENTS.md
