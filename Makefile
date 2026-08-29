@@ -1,5 +1,8 @@
 .PHONY: setup lint format test run
 
+data:
+	uv run python scripts/download_data.py
+
 setup:
 	uv sync
 

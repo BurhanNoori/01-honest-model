@@ -1,0 +1,25 @@
+# ==========================================
+# Central Configuration — The Honest Model
+# ==========================================
+
+paths:
+  raw_data_dir: "data/raw"
+  processed_data_dir: "data/processed"
+  models_dir: "models"
+  reports_dir: "reports"
+
+data:
+  target_col: "TARGET"
+  id_col: "SK_ID_CURR"
+  # Home Credit tables
+  main_table: "application_train.csv"
+
+split:
+  test_size: 0.20
+  random_state: 42
+
+baseline_model:
+  random_state: 42
+  n_estimators: 100
+  learning_rate: 0.05
+  max_depth: 6
