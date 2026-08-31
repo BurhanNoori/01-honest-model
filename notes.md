@@ -145,5 +145,26 @@ Different result
 
 ### **Data & Environment Isolation**: Never commit raw/processed data, model binaries, or `.venv` to Git. Keep `data/` and `.venv/` strictly in `.gitignore`.
 
+
+### **Question**: When does merge silently multiply your row count, and how do you detect it in one line?
+The mechanism:
+In a 1-to-Many join (e.g. application_train → bureau), applicant SK_ID_CURR = 100001 exists once in the left table but has 12 matching rows in bureau. When Pandas merge runs, it replicates that one left
+row 12 times — once for every matching right row. The result explodes from 307k rows to millions.
+One line to detect it (cleaner than an assert):
+df_bureau.groupby("SK_ID_CURR").size().describe()
+If max > 1, the right table is Many-to-One with the left and a direct merge will explode row count.
+
+### **Question**:  Why is category dtype sometimes slower than object?
+
+"Objects are fast in such cases" doesn't explain the exact mechanism.
+The actual mechanism:
+In Pandas, a category column stores values as a dictionary (lookup table of unique strings) + an array of integer codes. This is efficient for memory but adds a lookup step.
+When you do a groupby or merge on a category column, Pandas must:
+1. Validate that all codes match valid entries in the category dictionary.
+2. Expand/decode codes back into actual string labels to compute group keys or join keys.
+3. Handle edge cases where two categoricals have different dictionaries (e.g. ["M", "F"] vs ["F", "M"]) — Pandas must reconcile them before joining.
+
+For a high-cardinality column (e.g. 200,000 unique strings out of 300,000 rows), the dictionary itself becomes a large memory overhead and the lookup cost per row exceeds the simple pointer-comparison
+cost of plain object.
 ## 4. Project recipe
 *(To be populated as feature engineering, validation split strategy, and leak detection are built).*
