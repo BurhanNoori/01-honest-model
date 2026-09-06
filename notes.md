@@ -4,13 +4,21 @@
 - `uv init --package <name>` created a nested subfolder; using `uv init --package --name <name> .` properly targets the current directory.
 - `import pyyaml` failed with `ModuleNotFoundError` because the PyPI package is `pyyaml`, but the Python import name is `yaml`.
 - Overriding Pydantic's `model_validate` method manually caused a `NameError` on `AppConfig` and bypassed Pydantic's built-in recursive parsing; Pydantic handles nested sub-models automatically.
-- Kaggle API returned `403 Forbidden` on download because competition terms/rules must be explicitly accepted on the Kaggle website in the browser before the API is authorized.
+- Passing a boolean Series directly inside a Pandas named aggregation tuple (e.g. `("IS_ACTIVE" == 0, "count")`) raises `TypeError: unhashable type: 'Series'`. Named aggregation strictly expects `("column_name_str", "func")`. Helper columns must be created beforehand on the DataFrame.
+- In test assertions for aggregated tables, asserting against input/temporary column names (`IS_ACTIVE`, raw `DAYS_CREDIT`) fails because the aggregated DataFrame only contains the output feature names (`BUREAU_ACTIVE_LOAN_COUNT`, `BUREAU_DAYS_CREDIT_MIN`).
 
 ## 2. Learnings
 - **`pyproject.toml` vs `uv.lock`**: `pyproject.toml` defines high-level direct dependencies, version constraints, and tool configurations; `uv.lock` freezes the entire transitive dependency graph (exact wheels, versions, and hashes) ensuring deterministic bit-for-bit builds across environments.
 - **Fail-fast configuration**: Loading settings through typed Pydantic models catches missing keys, typos, and invalid types immediately at startup, preventing runtime crashes hours into model training.
 - **Idempotent ingestion**: Scripts that fetch data should be idempotent—checking if raw files or archives already exist to avoid redundant multi-hundred-megabyte downloads.
 - **Pre-commit quality gates**: Automating `ruff` and file hygiene via `.pre-commit-config.yaml` catches formatting errors, syntax issues, and large file leaks before code enters Git history.
+- **`groupby().agg()` vs `groupby().transform()`**:
+  - `agg(["mean", "max"])` **collapses** the table — N rows becomes 1 row per group with new summary columns. Use when merging child table features back to the main table.
+  - `transform("mean")` **preserves** row count — broadcasts the group result back to every original row. Use for within-group normalization staying in the same table.
+  - **The trap**: Using `transform()` then merging silently explodes row count because the child table still has M rows per applicant.
+- **Named Aggregations in Pandas**: `df.groupby("key").agg(NEW_COL=("ORIG_COL", "stat"))` directly builds clean, flattened, and prefixed column names in a single pass without MultiIndex column renaming headaches.
+- **Dual Feature Strategy (Lifetime vs Active)**: Never discard closed loans naively; compute both lifetime historical aggregates (past repayment volume, overdue history across all loans) and current active burden (active loan debt/count) for maximum tree-model predictive signal.
+- **Temporal leak in aggregations**: Only aggregate child table rows that predate the application date (`DAYS_CREDIT < 0`). Excluding ambiguous boundary events (`DAYS_CREDIT = 0`) prevents the current loan decision from leaking into training features.
 
 ## 3. Things to remember
 ### Sources of Nondeterminism in ML

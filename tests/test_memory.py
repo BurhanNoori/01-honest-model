@@ -29,12 +29,6 @@ def test_reduce_memory_usage():
     )
 
     assert df["id"].dtype == "int8", "ID column should be downcasted to int8."
-    assert df["salaries"].dtype == "float64", (
-        "Salaries column should be downcasted to float64."
-    )
-    assert df["names"].dtype != "category", (
-        "Names column should not be converted to category."
-    )
-    assert df["gender"].dtype == "category", (
-        "Gender column should be converted to category."
-    )
+    assert df["salaries"].dtype == "float64", "Salaries column should be downcasted to float64."
+    assert df["names"].dtype != "category", "Names column should not be converted to category."
+    assert df["gender"].dtype == "category", "Gender column should be converted to category."

@@ -1,8 +1,8 @@
 """
 1. Loads each Home Credit CSV using pd.read_csv().
- 2. Measures and prints baseline memory for each table.
- 3. Calls reduce_memory_usage() on each.
- 4. Prints before/after per-table and total working set size.
+2. Measures and prints baseline memory for each table.
+3. Calls reduce_memory_usage() on each.
+4. Prints before/after per-table and total working set size.
 
 """
 
@@ -54,7 +54,4 @@ for df in optimized_dfs:
     mem = df.memory_usage(deep=True).sum()
     total_memory += mem
 
-print(
-    f"Total memory occupied by all DataFrames: "
-    f"{total_memory / (1024 * 1024 * 1024):.2f} GB"
-)
+print(f"Total memory occupied by all DataFrames: {total_memory / (1024 * 1024 * 1024):.2f} GB")
