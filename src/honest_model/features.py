@@ -32,8 +32,6 @@ But other child tables such as bureau has multiple entries of same applicant.
 
 import pandas as pd
 
-from honest_model.memory import reduce_memory_usage
-
 
 def aggregate_bureau(bureau: pd.DataFrame, bureau_balance: pd.DataFrame) -> pd.DataFrame:
 
@@ -41,7 +39,7 @@ def aggregate_bureau(bureau: pd.DataFrame, bureau_balance: pd.DataFrame) -> pd.D
     bb = bureau_balance.copy()
     bb["IS_OVERDUE"] = bb["STATUS"].isin(["1", "2", "3", "4", "5"]).astype(int)
     bb_agg = (
-        bb.groupby("SK_BUREAU_ID")
+        bb.groupby("SK_ID_BUREAU")
         .agg(
             BB_MONTHS_COUNT=("MONTHS_BALANCE", "count"),
             BB_OVERDUE_MONTHS=("IS_OVERDUE", "sum"),
@@ -53,10 +51,14 @@ def aggregate_bureau(bureau: pd.DataFrame, bureau_balance: pd.DataFrame) -> pd.D
     bureau = bureau[bureau["DAYS_CREDIT"] < 0].copy()
 
     # 1-to-1 now, so this cannot explode rows
-    bureau = bureau.merge(bb_agg, on="SK_BUREAU_ID", how="left")
-    bureau[["BB_MONTHS_COUNT", "BB_OVERDUE_MONTHS"]] = bureau[
-        ["BB_MONTHS_COUNT", "BB_OVERDUE_MONTHS"]
-    ].fillna(0)
+    bureau = bureau.merge(bb_agg, on="SK_ID_BUREAU", how="left")
+
+    # Filling NaN or missing values with 0
+    bureau[["BB_MONTHS_COUNT", "BB_OVERDUE_MONTHS"]] = (
+        bureau[  # [[]] is for dataframe whereas [] is used for series
+            ["BB_MONTHS_COUNT", "BB_OVERDUE_MONTHS"]
+        ].fillna(0)
+    )
 
     bureau["IS_ACTIVE"] = (bureau["CREDIT_ACTIVE"] == "Active").astype(int)
     bureau["IS_CLOSED"] = (bureau["CREDIT_ACTIVE"] == "Closed").astype(int)
@@ -70,10 +72,17 @@ def aggregate_bureau(bureau: pd.DataFrame, bureau_balance: pd.DataFrame) -> pd.D
         (bureau["IS_ACTIVE"] == 1) & bureau["AMT_CREDIT_SUM_DEBT"].isna()
     ).astype(int)
 
-    enddate_known = bureau["DAYS_CREDIT_ENDDATE"].notna()
+    # Checking NaN on the loan pending enddate (-ve means loan settled +ve means still left rel.
+    # to the date of application)
+    enddate_known = bureau[
+        "DAYS_CREDIT_ENDDATE"
+    ].notna()  # series of boolean False for NaN otherwise True
+
     bureau["MONTHS_REMAINING"] = (bureau["DAYS_CREDIT_ENDDATE"] / 30).clip(lower=0)
     is_ongoing = enddate_known & (bureau["MONTHS_REMAINING"] > 0)
     bureau["IS_ONGOING"] = is_ongoing.astype(int)
+
+    # enddate's not is endate_missing same as endate_missing = !enddate_known
     bureau["ENDDATE_MISSING"] = (~enddate_known).astype(int)
     bureau["ANNUITY_IF_ONGOING"] = bureau["AMT_ANNUITY"].where(is_ongoing)
 
@@ -107,9 +116,108 @@ def aggregate_bureau(bureau: pd.DataFrame, bureau_balance: pd.DataFrame) -> pd.D
         )
     ) * 100
 
-    return reduce_memory_usage(bureau_agg)
+    return bureau_agg
 
 
-def join_features(application: pd.DataFrame, child: pd.DataFrame) -> pd.DataFrame:
+def aggregate_pos_cash(pos_cash) -> pd.DataFrame:
+    pos_cash = pos_cash.copy()  # work on a copy
+    # Check all passed failed payment
+    pos_cash["IS_PAYMENT_FAILED"] = (pos_cash["MONTHS_BALANCE"] < 0) & (
+        pos_cash["SK_DPD"] > 0
+    ).astype(int)
+    pos_cash_agg = (
+        pos_cash.groupby("SK_ID_CURR")
+        .agg(
+            POS_PAST_INSTALMENT_FAILED_ON_TIME=("IS_PAYMENT_FAILED", "sum"),
+            POS_PAST_TOTAL_INSTALLMENTS=("IS_PAYMENT_FAILED", "count"),
+        )
+        .reset_index()
+    )
 
-    return application.merge(child, on="SK_ID_CURR", how="left")
+    pos_cash_agg["POS_PAYMENT_FAILURE_RATE"] = (
+        pos_cash_agg["POS_PAST_INSTALMENT_FAILED_ON_TIME"].div(
+            pos_cash_agg["POS_PAST_INSTALMENT_FAILED_ON_TIME"].where(lambda s: s > 0)
+        )
+        * 100
+    )
+
+    return pos_cash_agg
+
+
+def aggregate_installments(installments) -> pd.DataFrame:
+    installments = installments.copy()  # work on a copy
+    installments["FAILED_TO_PAY"] = (
+        installments["AMT_PAYMENT"] < installments["AMT_INSTALMENT"]
+    ).astype(int)
+    installments_agg = (
+        installments.groupby("SK_ID_CURR")
+        .agg(
+            INSTALMENTS_TOTAL_FAILURES=("FAILED_TO_PAY", "sum"),
+            INSTALMENTS_TOTAL=("FAILED_TO_PAY", "count"),
+        )
+        .reset_index()
+    )
+
+    return installments_agg
+
+
+def aggregate_credit_card(cc) -> pd.DataFrame:
+    cc = cc.copy()  # work on a copy
+    # What we want
+    # 1. Failure rate to pay the bills on time
+    cc["BILL_FAILURE"] = (
+        (cc["AMT_BALANCE"] > 0) & (cc["AMT_PAYMENT_TOTAL_CURRENT"] < cc["AMT_BALANCE"])
+    ).astype(int)
+
+    # 2. What are his mean monthly expenses
+    cc_agg = (
+        cc.groupby("SK_ID_CURR")
+        .agg(
+            CREDIT_CARD_TOTAL_MONTHS=("MONTHS_BALANCE", "count"),
+            CREDIT_CARD_MEAN_MONTHLY_EXPENSE=("AMT_TOTAL_RECEIVABLE", "mean"),
+            CREDIT_CARD_MEAN_MONTHLY_PAID=("AMT_PAYMENT_TOTAL_CURRENT", "mean"),
+            CREDIT_CARD_BILL_FAILURE=("BILL_FAILURE", "sum"),
+        )
+        .reset_index()
+    )
+
+    cc_agg["CREDIT_CARD_BILL_FAILURE_RATE"] = (
+        cc_agg["CREDIT_CARD_BILL_FAILURE"].div(
+            cc_agg["CREDIT_CARD_TOTAL_MONTHS"].where(lambda s: s > 0)
+        )
+        * 100
+    )
+    return cc_agg
+
+
+def aggregate_previous_applications(prev: pd.DataFrame) -> pd.DataFrame:
+    prev = prev.copy()  # work on a copy
+    # Step 1. Temporal filter, only past decisions
+    prev = prev[prev["DAYS_DECISION"] < 0].copy()
+
+    # Step 2. Indicators for approval and refusal
+    prev["IS_APPROVED"] = (prev["NAME_CONTRACT_STATUS"] == "Approved").astype(int)
+    prev["IS_REFUSED"] = (prev["NAME_CONTRACT_STATUS"] == "Refused").astype(int)
+    prev["APP_CREDIT_RATIO"] = prev["AMT_CREDIT"].div(prev["AMT_APPLICATION"]) * 100
+
+    # Step 3. Group by applicant
+    prev_agg = (
+        prev.groupby("SK_ID_CURR")
+        .agg(
+            PREV_APP_COUNT=("DAYS_DECISION", "count"),
+            PREV_APPROVED_COUNT=("IS_APPROVED", "sum"),
+            PREV_REFUSED_COUNT=("IS_REFUSED", "sum"),
+            PREV_DAYS_DECISION_MIN=("DAYS_DECISION", "min"),
+            PREV_DAYS_DECISION_MAX=("DAYS_DECISION", "max"),
+            PREV_AMT_CREDIT_SUM=("AMT_CREDIT", "sum"),
+            PREV_AMT_APPLICATION_MEAN=("AMT_APPLICATION", "mean"),
+            PREV_APP_CREDIT_RATIO_MEAN=("APP_CREDIT_RATIO", "mean"),
+        )
+        .reset_index()
+    )
+
+    prev_agg["PREV_REFUSAL_RATE"] = (
+        prev_agg["PREV_REFUSED_COUNT"] / prev_agg["PREV_APP_COUNT"]
+    ) * 100
+
+    return prev_agg
