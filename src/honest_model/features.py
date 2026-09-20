@@ -120,11 +120,9 @@ def aggregate_bureau(bureau: pd.DataFrame, bureau_balance: pd.DataFrame) -> pd.D
 
 
 def aggregate_pos_cash(pos_cash) -> pd.DataFrame:
-    pos_cash = pos_cash.copy()  # work on a copy
+    pos_cash = pos_cash[pos_cash["MONTHS_BALANCE"] < 0]  # work on a copy
     # Check all passed failed payment
-    pos_cash["IS_PAYMENT_FAILED"] = (pos_cash["MONTHS_BALANCE"] < 0) & (
-        pos_cash["SK_DPD"] > 0
-    ).astype(int)
+    pos_cash["IS_PAYMENT_FAILED"] = (pos_cash["SK_DPD"] > 0).astype(int)
     pos_cash_agg = (
         pos_cash.groupby("SK_ID_CURR")
         .agg(
@@ -162,7 +160,7 @@ def aggregate_installments(installments) -> pd.DataFrame:
 
 
 def aggregate_credit_card(cc) -> pd.DataFrame:
-    cc = cc.copy()  # work on a copy
+    cc = cc[cc["MONTHS_BALANCE"] < 0].copy()  # work on a copy
     # What we want
     # 1. Failure rate to pay the bills on time
     cc["BILL_FAILURE"] = (

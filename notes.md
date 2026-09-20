@@ -19,6 +19,8 @@
 - **Named Aggregations in Pandas**: `df.groupby("key").agg(NEW_COL=("ORIG_COL", "stat"))` directly builds clean, flattened, and prefixed column names in a single pass without MultiIndex column renaming headaches.
 - **Dual Feature Strategy (Lifetime vs Active)**: Never discard closed loans naively; compute both lifetime historical aggregates (past repayment volume, overdue history across all loans) and current active burden (active loan debt/count) for maximum tree-model predictive signal.
 - **Temporal leak in aggregations**: Only aggregate child table rows that predate the application date (`DAYS_CREDIT < 0`). Excluding ambiguous boundary events (`DAYS_CREDIT = 0`) prevents the current loan decision from leaking into training features.
+- **NumPy Broadcasting Mechanics**: Compares array shapes dimension-by-dimension starting from the trailing (rightmost) axis. Two dimensions are compatible if they are equal or if one of them is 1. Dimensions of size 1 are stretched virtually without copying data in memory via stride-0 strides.
+- **Vectorization vs Python Loops**: Pure Python loops incur bytecode interpreter, type checking, and PyObject heap allocation overhead on every single iteration. Vectorized NumPy operations hand contiguous C buffers directly to hardware CPU SIMD (Single Instruction, Multiple Data) instructions, running 15x–30x+ faster on modern CPUs.
 
 ## 3. Things to remember
 ### Sources of Nondeterminism in ML
@@ -174,5 +176,30 @@ When you do a groupby or merge on a category column, Pandas must:
 
 For a high-cardinality column (e.g. 200,000 unique strings out of 300,000 rows), the dictionary itself becomes a large memory overhead and the lookup cost per row exceeds the simple pointer-comparison
 cost of plain object.
+
+### **Question**: Why is `.apply()` on a groupby usually a performance mistake?
+The mechanism:
+1. **Python loop overhead vs compiled C kernels**: Built-in aggregations (`.sum()`, `.mean()`, `.agg()`) run in compiled C/Cython with optimized vectorization. In contrast, `.apply()` falls back to pure Python: for 307,000 applicants, it constructs 307,000 separate temporary DataFrame slices, makes 307,000 Python function calls, and stitches them back together. It is typically 10x to 100x slower.
+2. **Double execution on the first group**: Pandas calls your function twice on the first group to infer return types and shapes.
+3. **Memory churn**: Creating hundreds of thousands of intermediate Python objects triggers constant garbage collection.
+
+### **Question**: Predict output shape of `A[:, None, :] * B[None, :, :]` for A of shape (4, 3) and B of shape (5, 3).
+- $A_{new} = A[:, \text{None}, :]$ has shape `(4, 1, 3)`.
+- $B_{new} = B[\text{None}, :, :]$ has shape `(1, 5, 3)`.
+- Aligning right to left:
+  - Dim 2: $3$ vs $3 \rightarrow 3$
+  - Dim 1: $1$ vs $5 \rightarrow 5$
+  - Dim 0: $4$ vs $1 \rightarrow 4$
+- **Resulting shape: `(4, 5, 3)`**.
+
+### **Question**: Why does broadcasting sometimes blow up memory rather than saving it?
+In broadcasting, the inputs use virtual stride-0 pointers without copying data. However, the **output result must be fully materialized in memory**.
+If $A$ has shape `(100000, 1, 10)` (~8 MB) and $B$ has shape `(1, 100000, 10)` (~8 MB), the broadcast output has shape `(100000, 100000, 10)`. At 8 bytes per float64, this requires $10^{11} \times 8 \approx \mathbf{800\text{ GB}}$ of RAM, instantly causing an Out-of-Memory (OOM) system crash.
+
+### Real Day 5 Benchmarks Measured (`scripts/benchmark_vectorization.py`):
+1. **Recency Decay** (100k loans x 3 windows): Loop = 0.2810s, Vectorized = 0.0110s $\rightarrow$ **25.5x speedup**.
+2. **Relative Credit Gap** (100k credits x 5 tiers): Loop = 0.3597s, Vectorized = 0.0119s $\rightarrow$ **30.3x speedup**.
+3. **Matrix Standardization** (100k rows x 10 features): Loop = 1.2136s, Vectorized = 0.0643s $\rightarrow$ **18.9x speedup**.
+
 ## 4. Project recipe
 *(To be populated as feature engineering, validation split strategy, and leak detection are built).*

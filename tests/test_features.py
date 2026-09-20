@@ -151,9 +151,9 @@ def credit_card_df():
             "SK_ID_CURR": [1, 1, 2, 2, 3],
             "SK_ID_PREV": [101, 102, 201, 202, 301],
             "MONTHS_BALANCE": [-1, -2, -1, 0, -3],
-            "AMT_BALANCE": [1000, 2000, 1500, 2500, np.nan],
-            "AMT_TOTAL_RECEIVABLE": [900, 2100, 1400, 2600, np.nan],
-            "AMT_PAYMENT_TOTAL_CURRENT": [1200, 2200, 1600, 2700, np.nan],
+            "AMT_BALANCE": [1000, 2000, 1500, 2500, 3000],
+            "AMT_TOTAL_RECEIVABLE": [900, 2100, 1400, 2600, 3100],
+            "AMT_PAYMENT_TOTAL_CURRENT": [1200, 2200, 1600, 2700, 3200],
         }
     )
 
@@ -188,10 +188,10 @@ def previous_application_df():
         {
             "SK_ID_CURR": [1, 1, 2, 2, 3],
             "SK_ID_PREV": [101, 102, 201, 202, 301],
-            "AMT_APPLICATION": [10000, np.nan, 15000, 25000, 30000],
-            "AMT_CREDIT": [9000, np.nan, 14000, 26000, 29000],
-            "AMT_DOWN_PAYMENT": [1000, np.nan, 1500, 2500, 3000],
-            "DAYS_DECISION": [-10, -20, -15, -25, -30],
+            "AMT_APPLICATION": [10000, 12000, 15000, 25000, 30000],
+            "AMT_CREDIT": [9000, 11000, 14000, 26000, 29000],
+            "AMT_DOWN_PAYMENT": [1000, 1200, 1500, 2500, 3000],
+            "DAYS_DECISION": [-10, -20, -15, -25, 0],
             "NAME_CONTRACT_STATUS": ["Approved", "Refused", "Approved", "Refused", "Approved"],
         }
     )
@@ -353,6 +353,23 @@ def test_month_totals_count_each_loan_once(agg: pd.DataFrame):
 def test_loans_without_balance_history_count_as_zero_months(agg: pd.DataFrame):
     # applicant 3's only loan has no balance rows at all
     assert agg.loc[3, "BUREAU_MONTHS_TOTAL"] == 0
+
+
+def test_credit_card_aggregation_with_months_filter(credit_card_df: pd.DataFrame):
+    cc_agg = aggregate_credit_card(credit_card_df).set_index("SK_ID_CURR")
+    assert cc_agg.loc[1, "CREDIT_CARD_TOTAL_MONTHS"] == 2
+
+
+def test_pos_cash_aggregation_with_months_filter(pos_cash_df: pd.DataFrame):
+    pos_agg = aggregate_pos_cash(pos_cash_df).set_index("SK_ID_CURR")
+    assert pos_agg.loc[1, "POS_PAST_INSTALMENT_FAILED_ON_TIME"] == 1
+
+
+def test_previous_application_aggregation_with_days_decision_filter(
+    previous_application_df: pd.DataFrame,
+):
+    prev_agg = aggregate_previous_applications(previous_application_df).set_index("SK_ID_CURR")
+    assert prev_agg.loc[1, "PREV_APP_COUNT"] == 2
 
 
 # --------------------------------------------------------------------------
