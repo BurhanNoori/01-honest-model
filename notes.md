@@ -228,5 +228,17 @@ If $A$ has shape `(100000, 1, 10)` (~8 MB) and $B$ has shape `(1, 100000, 10)` (
 - **Preprocessing Injected**: `SimpleImputer(strategy="median")` + `StandardScaler()` fit-transformed pre-split across all 307,511 rows
 - **Recorded Naive (Leaked) ROC-AUC**: **`0.75061`**
 
+### Real Day 7 Honest Pipeline Measurement (`scripts/train.py`):
+- **Model**: `LGBMClassifier(random_state=42)` inside `sklearn.Pipeline`
+- **Features**: same 99 numeric columns
+- **Split Order**: `train_test_split` called BEFORE `pipeline.fit` — no preprocessing leakage
+- **Imputer Strategy**: `median` (not mean — mean is distorted by large credit outliers)
+- **Recorded Honest ROC-AUC**: **`0.75086`**
+- **Delta vs Leaked Baseline**: **`+0.00025`** (essentially flat — pre-split preprocessing alone is a minor leak on this dataset; the split strategy and feature-level leaks matter far more)
+
+### Concepts to revise (handed to me, I did not write these independently):
+- **Completing the evaluation loop in a pipeline script**: After computing `predict_proba`, I left out the `roc_auc_score` import and the final print. The full pattern is always: import metric → compute score → compare and print delta. Never leave a script that computes predictions without also evaluating them.
+- **Mean vs median imputer choice**: I chose `strategy="mean"` without justification. The correct choice for financial data is `median` because credit-related columns (amounts, term lengths) contain large outliers that pull the mean far from the typical customer. The median is the middle value — outliers cannot move it.
+
 ## 4. Project recipe
 *(To be populated as feature engineering, validation split strategy, and leak detection are built).*
