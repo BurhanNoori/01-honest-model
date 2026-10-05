@@ -21,6 +21,25 @@
 - **Temporal leak in aggregations**: Only aggregate child table rows that predate the application date (`DAYS_CREDIT < 0`). Excluding ambiguous boundary events (`DAYS_CREDIT = 0`) prevents the current loan decision from leaking into training features.
 - **NumPy Broadcasting Mechanics**: Compares array shapes dimension-by-dimension starting from the trailing (rightmost) axis. Two dimensions are compatible if they are equal or if one of them is 1. Dimensions of size 1 are stretched virtually without copying data in memory via stride-0 strides.
 - **Vectorization vs Python Loops**: Pure Python loops incur bytecode interpreter, type checking, and PyObject heap allocation overhead on every single iteration. Vectorized NumPy operations hand contiguous C buffers directly to hardware CPU SIMD (Single Instruction, Multiple Data) instructions, running 15x–30x+ faster on modern CPUs.
+- **Preprocessor (Transformer) vs Model (Estimator)**:
+  - *Preprocessor* (`StandardScaler`, `SimpleImputer`): Cleans and rescales data columns. It knows nothing about target labels (`y`) and makes no predictions. Uses `.fit()` to calculate column statistics ($\mu, \sigma$, median) and `.transform()` to modify values.
+  - *Model* (`LogisticRegression`, `LGBMClassifier`): Learns the mathematical mapping between features ($X$) and target outcomes ($y$). Uses `.fit(X, y)` to tune weights/splits. When training completes, weights are frozen. Uses `.predict()` / `.predict_proba()` on new inputs without altering weights. Models never have a `.transform()` method.
+- **`.fit()` vs `.transform()` vs `.fit_transform()`**:
+  - `.fit(X)` calculates and remembers parameters (e.g. `scaler.mean_`, `imputer.statistics_`) without modifying data.
+  - `.transform(X)` applies those saved parameters to change numerical values.
+  - `.fit_transform(X)` is a convenience shortcut for `.fit(X)` followed by `.transform(X)` on the training set.
+- **Why Train Statistics ($\mu_{\text{train}}, \sigma_{\text{train}}$) Must Scale Future Data**:
+  1. *Production Reality (Single-Customer Problem)*: In production, customers arrive one by one. You cannot calculate a mean or std on $N=1$ sample. You must scale against the stored training distribution.
+  2. *Coordinate Frame Consistency (The Ruler)*: The model learned decision thresholds relative to $\mu_{\text{train}}$. Re-calculating a separate mean on test data shifts the definition of zero and distorts features relative to the learned decision boundaries.
+- **Pre-Split Preprocessing Leak**: Running `fit_transform(X)` across the full dataset before splitting bakes the mean, variance, and medians of future test samples into the training features. The test set appears artificially well-centered in the training space, producing an inflated, dishonest test AUC.
+- **Why LightGBM over Classical Scikit-Learn Models on Tabular Data**:
+  - *Non-linear credit risk relationships*: Real-world lending risk is non-linear (e.g., 5 past loans is safer than 1 unproven loan or 40 desperate loans). Linear models (`LogisticRegression`) assume monotonic straight lines and miss non-linear thresholds; tree-based models split on complex boundaries naturally.
+  - *Speed via Histogram Binning*: LightGBM discretizes continuous floating-point features into compact integer bins (`Total Bins: 10950`), allowing it to train on 246,000 rows in <2 seconds. Scikit-learn's `RandomForestClassifier` would take 5–10 minutes and gigabytes of memory.
+  - *API Conformance*: Implements the exact same `.fit(X, y)` and `.predict_proba(X)` scikit-learn protocol, making it a drop-in estimator for scikit-learn pipelines.
+- **The 3 Distinct Data Leaks & Their Relative Impact**:
+  1. *Pre-Split Preprocessing Leak* (Minor, +0.005 to +0.01 AUC): Leaks summary statistics ($\mu, \sigma$, medians) across the split boundary.
+  2. *Split Strategy Leak* (Moderate, +0.01 to +0.03 AUC): Random shuffling mixes future macro regimes and multi-event entities between train and test sets.
+  3. *Post-Outcome Feature Leak* (Massive, +0.10 to +0.25+ AUC): Features computed from events occurring *after* the loan decision. This inflates evaluation scores the most because it directly leaks information about the target outcome itself.
 
 ## 3. Things to remember
 ### Sources of Nondeterminism in ML
@@ -200,6 +219,14 @@ If $A$ has shape `(100000, 1, 10)` (~8 MB) and $B$ has shape `(1, 100000, 10)` (
 1. **Recency Decay** (100k loans x 3 windows): Loop = 0.2810s, Vectorized = 0.0110s $\rightarrow$ **25.5x speedup**.
 2. **Relative Credit Gap** (100k credits x 5 tiers): Loop = 0.3597s, Vectorized = 0.0119s $\rightarrow$ **30.3x speedup**.
 3. **Matrix Standardization** (100k rows x 10 features): Loop = 1.2136s, Vectorized = 0.0643s $\rightarrow$ **18.9x speedup**.
+
+### Real Day 6 Baseline Measurement (`scripts/train_naive.py`):
+- **Model**: `LGBMClassifier()` (LightGBM gradient boosted trees)
+- **Features**: 99 numeric columns from `application_train.csv`
+- **Training Samples**: 246,008 rows (80%)
+- **Test Samples**: 61,503 rows (20% random split)
+- **Preprocessing Injected**: `SimpleImputer(strategy="median")` + `StandardScaler()` fit-transformed pre-split across all 307,511 rows
+- **Recorded Naive (Leaked) ROC-AUC**: **`0.75061`**
 
 ## 4. Project recipe
 *(To be populated as feature engineering, validation split strategy, and leak detection are built).*
