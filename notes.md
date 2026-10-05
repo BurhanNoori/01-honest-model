@@ -240,5 +240,11 @@ If $A$ has shape `(100000, 1, 10)` (~8 MB) and $B$ has shape `(1, 100000, 10)` (
 - **Completing the evaluation loop in a pipeline script**: After computing `predict_proba`, I left out the `roc_auc_score` import and the final print. The full pattern is always: import metric → compute score → compare and print delta. Never leave a script that computes predictions without also evaluating them.
 - **Mean vs median imputer choice**: I chose `strategy="mean"` without justification. The correct choice for financial data is `median` because credit-related columns (amounts, term lengths) contain large outliers that pull the mean far from the typical customer. The median is the middle value — outliers cannot move it.
 
+### Day 7 Prove It — answers worked out via hint ladder:
+- **Q1 — Why does putting the imputer inside the Pipeline change the evaluation score?**
+  In `train_naive.py`, the imputer's median was calculated on all 307,511 rows before the split — including the 61,503 rows that later became the test set. Those test rows contributed their values to the median used to fill `X_train`. Their statistical fingerprint (their share of the median) leaked into training features. In `train.py`, the Pipeline ensures the imputer only ever calls `.fit()` on `X_train` (246,008 rows). The test rows contribute nothing to the median. The evaluation score reflects a genuinely unseen hold-out.
+- **Q2 — What leak does a correct Pipeline still not catch?**
+  A **temporal split leak**. If you use `train_test_split` (random shuffle) on time-ordered loan data, training rows will include recent loans (approved 1 month ago) and test rows will include old loans (approved 5 years ago). In production you always train on the past and predict the future — never the reverse. A Pipeline controls fit/transform boundaries but has no knowledge of how `X_train` and `X_test` were constructed. Passing in randomly shuffled time-series data produces a perfectly fit Pipeline on a poisoned input. The fix is a time-based split (cutoff date), not a random one.
+
 ## 4. Project recipe
 *(To be populated as feature engineering, validation split strategy, and leak detection are built).*
