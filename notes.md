@@ -246,5 +246,19 @@ If $A$ has shape `(100000, 1, 10)` (~8 MB) and $B$ has shape `(1, 100000, 10)` (
 - **Q2 — What leak does a correct Pipeline still not catch?**
   A **temporal split leak**. If you use `train_test_split` (random shuffle) on time-ordered loan data, training rows will include recent loans (approved 1 month ago) and test rows will include old loans (approved 5 years ago). In production you always train on the past and predict the future — never the reverse. A Pipeline controls fit/transform boundaries but has no knowledge of how `X_train` and `X_test` were constructed. Passing in randomly shuffled time-series data produces a perfectly fit Pipeline on a poisoned input. The fix is a time-based split (cutoff date), not a random one.
 
+### Real Day 8 Validation Strategy Measurement (`scripts/validate.py`):
+- **Model & Pipeline**: `LGBMClassifier(random_state=42)` inside `sklearn.Pipeline` with median imputer and standard scaler on 99 numeric features.
+- **KFold (5 splits, shuffled)**: Mean ROC-AUC = **0.75037** (std = 0.00144). Folds evaluate stably because data is randomly partitioned into equal ~246k training sets.
+- **GroupKFold (5 splits, groups=SK_ID_CURR)**: Mean ROC-AUC = **0.75037** (std = 0.00144). Exactly identical to KFold because every `SK_ID_CURR` in `application_train.csv` is unique (1 row per applicant).
+- **TimeSeriesSplit (5 splits)**: Mean ROC-AUC = **0.74363** (std = 0.00680).
+  - *Fold progression*: Fold 1 (51k train) = 0.73391 → Fold 5 (256k train) = 0.75182.
+  - *Why score climbs*: Larger training sets give the model more data diversity to learn finer decision boundaries (better generalization).
+  - *Why std is ~5x higher*: In the absence of a true calendar timestamp column, row order is arbitrary, causing artificial fold-to-fold variance.
+
+### Day 8 Learnings:
+- **KFold is for estimation, not fold selection**: CV estimates model stability and generalized performance. You do NOT pick the data from the best-performing fold; after validating, you train the final production model on 100% of the dataset.
+- **GroupKFold applicability**: Grouping only alters fold boundaries if the grouping ID appears multiple times across rows. On single-row-per-entity tables, `GroupKFold` reduces exactly to standard `KFold`.
+- **Dataset limitations on TimeSeriesSplit**: `TimeSeriesSplit` requires an absolute calendar time axis. Relative time columns (`DAYS_BIRTH`, `DAYS_EMPLOYED`) reset per applicant and cannot order applications chronologically against each other.
+
 ## 4. Project recipe
 *(To be populated as feature engineering, validation split strategy, and leak detection are built).*
