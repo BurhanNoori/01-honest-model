@@ -260,5 +260,25 @@ If $A$ has shape `(100000, 1, 10)` (~8 MB) and $B$ has shape `(1, 100000, 10)` (
 - **GroupKFold applicability**: Grouping only alters fold boundaries if the grouping ID appears multiple times across rows. On single-row-per-entity tables, `GroupKFold` reduces exactly to standard `KFold`.
 - **Dataset limitations on TimeSeriesSplit**: `TimeSeriesSplit` requires an absolute calendar time axis. Relative time columns (`DAYS_BIRTH`, `DAYS_EMPLOYED`) reset per applicant and cannot order applications chronologically against each other.
 
+### Day 9 Learnings (Nested CV Mechanics & Production Workflow):
+- **What Nested Cross-Validation Is**:
+  - **Outer Loop**: Splits full dataset into Train (80%) and Vaulted Test (20%). The 20% is locked away and never seen during hyperparameter selection.
+  - **Inner Loop**: Takes the 80% Outer Train data and splits it again (e.g. 5-fold CV $\rightarrow$ 64% inner train, 16% inner validation). Runs all hyperparameter combinations to find the winning parameters for that specific outer fold.
+  - **Outer Evaluation**: The winner from the inner loop is trained on the full 80% Outer Train data and evaluated on the untouched 20% Vaulted Test set.
+  - **Repeat**: Process repeats for all outer folds to record an outer score array.
+- **Why We Do Nested CV**:
+  - **Prevents Optimism Bias / Selection Leak**: Standard `GridSearchCV` evaluates 100 parameter combinations on the same CV folds and picks the highest score. That score is over-optimistic because the parameters were chosen *specifically because they fit the random quirks of those validation folds*.
+  - **Nested CV provides an UNBIASED estimate** of how well the hyperparameter tuning procedure will generalize to new, unseen production data.
+- **Production Retraining Strategy (After Nested CV Evaluation)**:
+  1. **Nested CV is purely for evaluation**: The temporary models created inside the nested loops are discarded. Their only job was to calculate an honest, un-biased performance estimate.
+  2. **Final Hyperparameter Selection**: Run **one single `GridSearchCV` / `RandomizedSearchCV` on 100% of the dataset** to find the overall winning hyperparameter combination across all available data.
+  3. **Train Final Production Model**: Instantiate a clean model with those winning hyperparameters, fit it on **100% of the dataset**, and export/serve this model binary for production deployment.
+
+### Real Day 9 Hyperparameter Tuning Measurement (`scripts/hyperparameter_tuning.py`):
+- **Model & Pipeline**: `LGBMClassifier(random_state=42)` inside `sklearn.Pipeline` tuning `n_estimators`, `max_depth`, and `learning_rate`.
+- **Single CV (Optimistic) ROC-AUC**: **0.74970** (`GridSearchCV` 5-fold best score).
+- **Nested CV (Unbiased) ROC-AUC**: **0.74931** (Outer 5-fold CV wrapping inner 3-fold `GridSearchCV`).
+- **Optimism Gap**: **+0.00039** (Single CV overestimates expected performance because hyperparameter selection fits the validation fold noise).
+
 ## 4. Project recipe
 *(To be populated as feature engineering, validation split strategy, and leak detection are built).*
