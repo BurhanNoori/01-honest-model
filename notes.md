@@ -32,11 +32,13 @@ in a way that accidentally cheats.
 | `scripts/validate.py` | Tests the model five times in different ways | 8 |
 | `scripts/hyperparameter_tuning.py` (v1) | First attempt at choosing settings fairly (has mistakes, kept for study) | 9 |
 | `scripts/hyperparameter_tuning_v2.py` (v2) | The corrected version | 9 |
+| `src/honest_model/boosting.py` | Gradient boosting written by hand | 12 |
+| `scripts/compare_boosting.py` | Checks it against scikit-learn | 12 |
 | `tests/` | Automatic checks that the code does what it should | throughout |
 
 ### How to read these notes
 
-Read chapters 1 to 9 in order; each one builds on the previous. Every chapter has the
+Read the chapters in order; each one builds on the previous. Every chapter has the
 same shape: **the problem**, **an everyday picture**, **the idea**, **where it is in our
 code**, and **what we found**. Words in **bold** the first time they appear are defined
 right there, and again in the Glossary at the end. Each chapter ends with "Check
@@ -345,7 +347,9 @@ We built the project both ways on purpose:
 
 ### What we found
 
-| Version | ROC-AUC |
+| Version | Regression | Predicting a number (a price, a disease score) rather than a probability |
+| Residual | What is left to explain: the real value minus the current prediction |
+| ROC-AUC |
 |---|---|
 | Cheating (`train_naive.py`) | 0.75061 |
 | Honest (`train.py`) | 0.75086 |
@@ -743,6 +747,138 @@ Short notes on the tools around the code:
 
 ---
 
+## 12. Gradient boosting from scratch (Day 10)
+
+### The problem
+
+LightGBM (Chapter 7) is a team of small trees, each one fixing the mistakes of the trees
+before it. But how does that actually work inside? On Day 10 we open the box and build
+the engine ourselves, then check that it gives exactly the same answers as scikit-learn.
+
+### An everyday picture: golf
+
+Your first shot lands somewhere near the hole, but not in it. For the next shot you
+don't start over: you aim at **what is left**, the remaining distance. Every later
+shot corrects whatever error is still left over. And you hit **softly** on purpose, so a
+bad bounce doesn't send you past the hole.
+
+- each shot is a tiny model, a **stump**;
+- the remaining distance is the **residual**;
+- hitting softly is the **learning rate**.
+
+### The idea
+
+We start with **regression**: predicting a *number*, not a probability. It is the
+simplest place to see the engine, because the leftover error is a plain subtraction.
+(A *regressor* predicts numbers; a *classifier* predicts probabilities. Turning a
+probability into yes/no is a separate step with a threshold, covered on Day 12.)
+
+**A stump** is a tree with exactly one question: "is feature *j* at most *t*?" If yes, it
+predicts one number; if no, another. Each side predicts the **average residual** of its
+rows, because the average is the value that makes the squared error smallest.
+
+**Finding the best stump:** try every feature and every cut-off. Put each cut-off
+halfway between two neighbouring values, so neither side is ever empty. For each one,
+add up the squared misses against the two averages, and keep the smallest.
+
+**The boosting loop, round by round:**
+
+```
+Start:   prediction = average of y, for every row          (the first rough shot)
+Round:   residual   = y − prediction                        (what is left)
+         stump      = best stump fitted to the residuals    (aim at what is left)
+         prediction = prediction + learning_rate × stump    (hit softly)
+Repeat for the chosen number of rounds.
+Final model = start value + learning_rate × (sum of all stumps)
+```
+
+### A worked round, on our real data
+
+From the diabetes data (442 patients, 10 measurements each, target = how much the disease
+progressed after a year):
+
+| Step | What happened |
+|---|---|
+| Start | Average progression = **152.133**, used as the first guess for everyone |
+| Residuals | each patient's real value minus 152.133 |
+| Best stump | feature 8 (`s5`, a blood measurement), cut-off **−0.00376** |
+| Its two answers | left side (218 patients): **−42.147**; right side (224 patients): **+41.018** |
+| Update (learning rate 0.1) | left: 152.133 − 4.215 = **147.918**; right: 152.133 + 4.102 = **156.235** |
+
+Every prediction moved toward its target, but only a tenth of the way. Round 2 then aims
+at the new, smaller residuals.
+
+### Where it lives in our code
+
+- `src/honest_model/boosting.py`:
+  - `find_best_stump(X, residuals)` tries every feature and midpoint cut-off, and returns
+    the feature, the cut-off, the left value and the right value.
+  - `predict_stump(stump, X)` answers for any rows, including new ones.
+  - `GradientBoostingScratch` has `fit` (start from the average, then repeat: residuals →
+    stump → soft step; it resets its stumps first, so fitting twice is safe) and `predict`
+    (start value + learning rate × every stump's answer).
+- `tests/test_boosting.py` checks the stump on a tiny input with a known answer (cut-off
+  3.5, left −4/3, right 4) and checks that fitting twice keeps the right number of stumps.
+- `scripts/compare_boosting.py` trains ours and scikit-learn's `GradientBoostingRegressor`
+  with matched settings (`max_depth=1`, the same rounds and learning rate, and
+  `criterion="squared_error"`, because the default `friedman_mse` can pick different
+  cut-offs), then compares them on training rows and on 20% held-out rows.
+
+### What we found
+
+| Check | Ours | scikit-learn |
+|---|---|---|
+| Training error (MSE), 50 stumps | 2763.4980 | 2763.4980 |
+| Test error on the 20% unseen rows | 2796.2772 | 2796.2772 |
+| Largest prediction difference | 6e-14 (rounding noise) | |
+| First split on the full data | feature 8, cut-off −0.00376 | same |
+
+Training error went down in every one of 100 rounds. Matching on *unseen* rows shows we
+learned the same rules, not just the same answers for the training rows.
+
+### Why it is called *gradient* boosting
+
+The **loss** measures how wrong one prediction is. For squared error it is
+½ × (y − prediction)². Ask: *if I nudge the prediction up a little, how fast does the loss
+change?* That rate is the **gradient**, and here it equals −(y − prediction): exactly
+minus the residual. So the residual is the **negative gradient**, the direction that
+reduces the loss fastest. Each round fits a stump to that direction and takes a small
+step along it (the learning rate is the step size). That is **gradient descent**, done on
+the predictions themselves instead of on weights.
+
+For other losses the negative gradient is a different formula. For example, for
+yes/no classification (Day 11) it becomes y − (predicted probability). The engine stays
+the same; only the "residual" formula changes. That is why the method is general.
+
+### Why shallow trees work better here
+
+- **Small, controlled steps.** Boosting improves by adding many small corrections. A
+  stump captures only one broad pattern per round.
+- **A deep tree learns noise.** A deep tree in round 1 can carve the residuals into tiny
+  groups and nearly reproduce the training rows. That includes their random noise, which
+  will not repeat on new data. Later rounds are then left fitting noise.
+- **Each small tree has low variance.** A shallow tree changes little if the data changes
+  a little. Boosting then reduces the remaining error (the *bias*) by adding many of them.
+- **Depth decides how features combine.** A stump uses one feature at a time. A depth-2
+  tree can capture pairs of features working together, and so on. Depth is a setting you
+  tune: shallow by default, deeper only if features really interact.
+
+### Check yourself
+
+<details><summary>Why does each side of a stump predict the average residual?</summary>
+
+Because, among all single numbers, the average is the one that makes the sum of squared
+misses smallest. Any other number would leave a larger total error on that side.
+</details>
+
+<details><summary>What would go wrong if fit() did not reset the list of stumps?</summary>
+
+Fitting the same model a second time (as cross-validation does) would add new stumps on
+top of the old ones, and predict() would add both sets together, giving wrong answers.
+</details>
+
+---
+
 ## Mistakes and lessons
 
 | # | What happened | Why (the thinking error) | Lesson | Status |
@@ -763,6 +899,11 @@ Short notes on the tools around the code:
 | 14 | While fixing v1, changed the model's seed instead of the inner splitter, and used `seed` without defining it | Did not separate the two kinds of seed | Know what each `random_state` controls (Chapter 10) | Fixed in v2 |
 | 15 | Ran `uv` from WSL on a Windows-made `.venv`, which half-deleted it | Did not know an environment belongs to the system that created it | One side only (Chapter 11) | Fixed (environment rebuilt) |
 | 16 | `aggregate_pos_cash` divides the failed-payment count **by itself** to get `POS_PAYMENT_FAILURE_RATE`, so the result is always 100 or blank | Probably copied the line and forgot to change the divisor | Check every new feature's values: a rate that is always 100 is a bug | **Open** (found while rewriting these notes) |
+| 17 | The Day 10 stump predicted a fixed +1 / −1 instead of each side's average residual | Mixed up gradient boosting with AdaBoost, which classifies into ±1 | A gradient-boosting stump predicts the **mean residual** on each side; check it on a tiny example with a known answer (the 4-point check chose "no split" instead of 3.5) | Fixed: 4-point check gives 3.5 / −1.33 / 4; first diabetes split matches scikit-learn's depth-1 tree |
+| 18 | Stump cut-offs used the data values themselves, so the largest value left one side empty | Did not think about the edge case | Put cut-offs halfway between neighbouring sorted values | Fixed |
+| 19 | `fit` in the from-scratch booster never cleared old stumps, so fitting twice gave 200 stumps instead of 100 | Reset state only in `__init__`, assuming a model is fitted once | `fit` must start from a clean slate, because cross-validation refits the same object | Fixed: fitting twice now keeps 10 of 10 stumps |
+| 20 | A scikit-learn snippet meant for `compare_boosting.py` was pasted at the bottom of `src/honest_model/boosting.py`, so importing the module crashed (`NameError`) | Edited the wrong file; the `src` module runs its top-level code on every import | Experiment code belongs in `scripts/`; run `pytest` after every edit, since it caught this at once | Fixed: snippet moved to the script |
+| 21 | The stump test expected cut-off 2.5 (left −2, right 2), but the best cut-off is 3.5 | Guessed the answer instead of scoring every cut-off; 2.5 leaves squared error 10, 3.5 leaves 4.67 | Work out a test's expected values by the same rule the code uses, on paper, before trusting either | Fixed: test now expects 3.5 / −4/3 / 4 |
 
 ---
 
@@ -801,6 +942,8 @@ Short notes on the tools around the code:
 | 8 | `validate.py` | TimeSeriesSplit | 0.74363 ± 0.00680 | Not valid: no real dates |
 | 9 | `hyperparameter_tuning.py` (v1) | Single vs nested, one seed | 0.74970 vs 0.74931, gap +0.00039 (reproduced exactly twice) | One run cannot prove it; see v2 |
 | 9 | `hyperparameter_tuning_v2.py` | Gap over 8 seeds (10 planned; stopped by session end) | mean +0.00028, SE 0.00007, t = 3.85 > 2.36 | Single CV is optimistic, but only by about 0.0003 |
+| 10 | `boosting.py` (from scratch) vs `GradientBoostingRegressor` | diabetes, 442 rows, 100 stumps, learning rate 0.1, training rows | largest prediction difference 1e-13; training MSE 2529.0046 for both; error fell every round; fit took 1.2 s | The hand-written booster reproduces scikit-learn exactly |
+| 10 | `compare_boosting.py` | diabetes, 80/20 split (`random_state=42`), 50 stumps, learning rate 0.1 | MSE train 2763.4980 / test 2796.2772 for **both**; largest prediction difference 6e-14 on train and test | Identical on unseen rows too, so the match is not just memorising the training rows |
 
 ---
 
@@ -838,6 +981,23 @@ For this project: 307,511 rows, 6 near-duplicate settings, 155 training runs per
 instead of 31, and a correction of only about 0.0003. Here, nested CV mostly confirmed that
 single CV was nearly honest. It becomes clearly worth it with a large search on a small
 dataset, or whenever the reported number is a promise to someone.
+
+**What is the "gradient" in gradient boosting the gradient of?** *(Day 10 Prove-it)*
+The gradient of the **loss** with respect to the **current predictions**. For squared error
+the loss for one row is ½ × (y − prediction)². Its rate of change as the prediction moves
+is −(y − prediction), so the residual `y − predictions` is exactly the **negative
+gradient**: the direction that lowers the loss fastest. Each round fits a stump to that
+direction and takes a small step (the learning rate). That is gradient descent on the
+predictions. For other losses the formula changes (for classification it is
+y − predicted probability), but the engine stays the same (Chapter 12).
+
+**Why do shallow trees work better as boosting base learners than deep ones?** *(Day 10 Prove-it)*
+Boosting wins by adding many small corrections. A shallow tree captures one broad pattern,
+changes little when the data changes a little (low variance), and leaves room for later
+rounds. A deep tree can nearly memorise the residuals in one round, noise included, so
+later rounds end up fitting noise and the model does worse on new data. Depth also decides
+how many features can act together: a stump uses one at a time, depth 2 allows pairs. So
+depth is a setting to tune, shallow by default (Chapter 12).
 
 **Why does putting the imputer inside the pipeline change the score?** *(Day 7)*
 In `train_naive.py`, the median was calculated from all 307,511 rows, including the
@@ -881,6 +1041,37 @@ What matters is the **size**:
 There is also a practical rule: if two models differ by **less than the gap**, the
 "better" one may only have been luckier. Don't trust a tuning win smaller than the gap.
 
+**Why not build Day 10's from-scratch booster on `application_train.csv`?** *(Day 10)*
+A from-scratch algorithm needs a small, clean dataset first, to check it is *correct*. A
+buggy version still runs and returns *a* number, just the wrong one. `application_train.csv`
+is too big for slow hand-written code (307,511 rows × 99 features, every round). It has
+empty cells the stump would need extra rules for. And its target is 0/1, while Day 10
+compares against a *regressor*, which predicts numbers. So we use scikit-learn's
+`load_diabetes()`: real patients, 10 features, 442 rows, no blanks, and a numeric target.
+Correct on small data first, then scale up.
+
+**Where should code go: `src/` or `scripts/`?** *(Day 10)*
+Ask: *is it imported and reused, or is it run to get an answer?* Reusable building blocks
+(functions, classes, with tests in `tests/`) go in `src/honest_model/`. Experiments that
+load data, call those blocks and print results go in `scripts/`. Day 10 therefore splits
+into three files: the booster in `src/honest_model/boosting.py`, its checks in
+`tests/test_boosting.py`, and the comparison with scikit-learn in
+`scripts/compare_boosting.py`.
+
+**Does a regressor turn probabilities into 0/1?** *(Day 10)*
+No. These are two different tools.
+- A **regressor** (`GradientBoostingRegressor`) predicts **a number**, such as disease
+  progression or a price. It is not a probability, and it is never turned into 0/1.
+- A **classifier** (`GradientBoostingClassifier`, or our `LGBMClassifier`) predicts a
+  **probability** between 0 and 1, through `predict_proba`.
+- Turning a probability into a yes/no decision is a **separate step**: you pick a
+  **threshold** ("refuse if the risk is above some level"). `.predict()` silently uses
+  0.5, but a lender should choose the threshold from the cost of each kind of mistake
+  (Day 12).
+- Inside, a gradient-boosting *classifier* boosts an unbounded score, and then squeezes it
+  into 0–1 at the end. So today's regressor is the engine, and classification adds that
+  squeeze on top (Day 11).
+
 **Earlier questions (Days 3–5), in one line each:**
 - A merge multiplies rows when the right-hand table has several rows per key. Check with
   `groupby(key).size().max()`.
@@ -913,7 +1104,9 @@ There is also a practical rule: if two models differ by **less than the gap**, t
 | Decision tree | A model that decides through a chain of yes/no questions |
 | Feature | A fact about each row that the model can use |
 | Fit | Learning a rule from data |
+| Classifier | A model that predicts a probability for a yes/no outcome |
 | Fold | One of the equal parts the data is cut into for cross-validation |
+| Gradient | How fast the loss changes when you nudge a prediction; its negative points to lower loss |
 | Gradient boosting | A team of small trees, each fixing the previous ones' mistakes |
 | GroupKFold | Cross-validation that keeps all rows of one person in the same fold |
 | Hyperparameter | A setting chosen before training, such as tree depth |
@@ -924,6 +1117,8 @@ There is also a practical rule: if two models differ by **less than the gap**, t
 | Lock file (`uv.lock`) | Exact versions of every library, for identical installs |
 | Median | The middle value when all values are sorted |
 | Merge | Joining two tables on a shared ID |
+| Loss | A number measuring how wrong a prediction is (here, squared error) |
+| Learning rate | The fraction of each new tree's correction that is actually applied |
 | Model | The learned pattern that turns features into a prediction |
 | Nested CV | Cross-validation with a search inside each round, so choosing and measuring never share data |
 | Optimism gap | How much the single-CV score exceeds the nested score |
@@ -934,6 +1129,7 @@ There is also a practical rule: if two models differ by **less than the gap**, t
 | Selection bias | The best of several noisy scores looks better than it really is |
 | Standard deviation | How much one measurement typically varies |
 | Standard error (SE) | How much the *average* of several measurements typically varies |
+| Stump | A tree with one question, giving one answer per side |
 | StratifiedKFold | KFold where each fold gets the same share of each outcome |
 | t-distribution | The bell curve corrected for few measurements; sets a higher bar |
 | Target | The column we want to predict (`TARGET`) |
